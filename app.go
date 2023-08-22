@@ -7,8 +7,8 @@ import (
 	"embed"
 	"encoding/csv"
 	"fmt"
-
 	"strconv"
+	"strings"
 
 	_ "github.com/glebarez/go-sqlite"
 )
@@ -32,54 +32,56 @@ func (a *App) startup(ctx context.Context) {
 //go:embed QandA.csv
 var database embed.FS
 
-// Greet returns a greeting for the given name
 func (a *App) Lookup(userinput string) string {
-	allRecords := readCSV()
-
-	db, err := sql.Open("sqlite", "file::memory:?cache=shared")
-	if err != nil {
-		return fmt.Sprintf("Error with SQL database creation from CSV: %s", err)
-	}
-	defer db.Close()
-
-	//Read in CSV to database for queries
-	stmt, err1 := db.Prepare(`create table if not exists qat(id integer, question text, answer text)`)
-	if err1 != nil {
-		return fmt.Sprintf("dbPrepare create table failed: %s", err1)
-	}
-
-	if _, err = stmt.Exec(); err != nil {
-		return fmt.Sprintf("stmt.Exec create table failed: %s", err)
-	}
-	for id := 0; id < len(allRecords); id++ {
-		record := allRecords[id]
-		question := record[0]
-		answer := record[1]
-		stmt, err = db.Prepare("insert into qat(id, question, answer) values(?, ?, ?)")
-		if err != nil {
-			return fmt.Sprintf("db.Prepare insert statement failed: %s", err)
-		}
-		_, err = stmt.Exec(strconv.Itoa(id), question, answer)
-		if err != nil {
-			return fmt.Sprintf("db.Exec populate table failed: %s", err)
-		}
-	}
-
-	//The Query to the database to return an answer
+	//Initialize Lookup
 	var answer string
-	userinput = "'" + userinput + "'"
-	err = db.QueryRow("SELECT answer FROM qat WHERE question = ?", userinput).Scan(&answer)
-	if err != nil {
-		return fmt.Sprintf("Query failed as '%s' is not in database", userinput)
+	allRecords := ReadData() //reads all records from embedded QandA.csv
+
+	//Ensures correct user input is a single word
+	words := strings.Fields(userinput) //uses ' ' as default delimiter
+	wordCount := len(words)
+	if wordCount == 0 {
+		answer = "No input given. Please input a word."
+	}
+	if wordCount > 1 {
+		answer = "Too many words given. Please input one word."
+	}
+	if wordCount == 1 {
+
+		userinput = ProcessInput(userinput) //Choose representation of input data
+
+		//Creates SQL database representation of corpus from allRecords that could be modified to include tf-idf
+		db, _ := sql.Open("sqlite", "file::memory:?cache=shared")                                       //temp
+		stmt, _ := db.Prepare(`create table if not exists qat(id integer, question text, answer text)`) //headers
+		stmt.Exec()
+		for id := 0; id < len(allRecords); id++ { //populating database
+			record := allRecords[id]
+			question := record[0] //Use this field to create 2nd SQL database with ID for a tf-idf representation
+			answer := record[1]
+			stmt, _ = db.Prepare("insert into qat(id, question, answer) values(?, ?, ?)")
+			stmt.Exec(strconv.Itoa(id), question, answer)
+		}
+
+		//Querying SQL database for a match
+		err := db.QueryRow("SELECT answer FROM qat WHERE question = ?", userinput).Scan(&answer) //performs actual search
+		if err != nil {
+			answer = fmt.Sprintf("Query failed as '%s' is not in database", userinput)
+		}
 	}
 	return answer
 }
 
-// Reads CSV file
-func readCSV() [][]string {
+// Reads CSV file from embedded binary
+func ReadData() [][]string {
 	csvInput, _ := database.ReadFile("QandA.csv")
 	csvReader := csv.NewReader(bytes.NewReader(csvInput))
 	csvReader.FieldsPerRecord = -1
 	allRecords, _ := csvReader.ReadAll()
 	return allRecords
+}
+
+// could be tokenized/lemmatized here to calculate similarity with a tf-idf representation
+func ProcessInput(userinput string) string {
+	userinput = "'" + userinput + "'"
+	return userinput
 }
